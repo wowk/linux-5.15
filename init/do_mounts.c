@@ -597,9 +597,17 @@ void __init mount_root(void)
 
 /*
  * Prepare the namespace - decide what/where to mount, load ramdisks, etc.
+ *
+ * 由于 initramfs/ramdisk （无论是编译期打包进内核还是bootloader指定的）中不存在
+ * init 程序，那么我们需要直接挂载 root= 参数指定的 rootfs 设备 （通常这种设备都存在于外部的存储设备，而
+ * 访问外部的存储设备都需要驱动，正好可以将这些必要的驱动打包进 initramfs，这样就可以加载这些驱动，然后访问
+ * 外部的存储设备，但是这个需要 /init 程序存在才行），然后执行其中的 init 程序
  */
 void __init prepare_namespace(void)
 {
+	/**
+	 * 如果指定了内核参数 rootdelay= , 则延迟等待挂载真正的 rootfs
+	*/
 	if (root_delay) {
 		printk(KERN_INFO "Waiting %d sec before mounting root device...\n",
 		       root_delay);
@@ -612,27 +620,56 @@ void __init prepare_namespace(void)
 	 * Note: this is a potential source of long boot delays.
 	 * For example, it is not atypical to wait 5 seconds here
 	 * for the touchpad of a laptop to initialize.
+	 * 
+	 * 这个函数用于等待设备的 probe 完成，当所有设备 probe 完成后，该函数就会返回，
+	 * 这其中包括了访问外部存储设备所需要的驱动，也就是说，等该函数返回后，我们就可以
+	 * 正常的访问外部的存储设备了，也就可以从外部设备加载 rootfs 了。
+	 * 
+	 * 但其实有些设备时异步的，所以下面还是会等待异步的设备probe完成
 	 */
 	wait_for_device_probe();
 
 	md_run_setup();
 
+	/**
+	 * 现在所有的设备都完成probe了，现在检查内核是否指定了 root= 启动参数
+	 * 如果指定了，就去尝试挂载
+	*/
 	if (saved_root_name[0]) {
 		root_device_name = saved_root_name;
+		/**
+		 * 首先检查当前的 root_device 是否时 mtd 或者 ubi 设备，如果是，
+		 * 则去挂载这种类型的设备到目录  /root ，挂载完成后直接返回
+		*/
 		if (!strncmp(root_device_name, "mtd", 3) ||
 		    !strncmp(root_device_name, "ubi", 3)) {
 			mount_block_root(root_device_name, root_mountflags);
 			goto out;
 		}
+
+		/**
+		 * 如果不是 mtd/ubi 设备，那么就去根据 root_device 名称来
+		 * 转换成对应的 设备号，在后续可以通过 这个设备号找到对应的设备并挂载
+		 * 
+		 * 这个设备名称其实是一个设备节点路径，或者是 PARTUUID
+		*/
 		ROOT_DEV = name_to_dev_t(root_device_name);
 		if (strncmp(root_device_name, "/dev/", 5) == 0)
 			root_device_name += 5;
 	}
 
+	/**
+	 * 如果 CONFIG_BLK_DEV_INITRD 选项没打开，那么这段函数什么也不做
+	*/
 	if (initrd_load())
 		goto out;
 
-	/* wait for any asynchronous scanning to complete */
+	/** wait for any asynchronous scanning to complete
+	 * 如果 root device 不存在并且指定了 root_wait 选项，则
+	 * 等待所有异步驱动加载完成，并且在这个过程中检查是否能找到对应名称
+	 * 的 root device
+	 * 
+	*/
 	if ((ROOT_DEV == 0) && root_wait) {
 		printk(KERN_INFO "Waiting for root device %s...\n",
 			saved_root_name);
@@ -666,7 +703,15 @@ struct file_system_type rootfs_fs_type = {
 
 void __init init_rootfs(void)
 {
+	// saved_root_name		这个变量保存了参数 root= 指定的值
+	// root_fs_names		这个变量保存了参数 rootfstype= 指定的值
+	//
+	// is_tmpfs 用于 rootfs 是否是 initramfs
 	if (IS_ENABLED(CONFIG_TMPFS) && !saved_root_name[0] &&
-		(!root_fs_names || strstr(root_fs_names, "tmpfs")))
+		(!root_fs_names || strstr(root_fs_names, "tmpfs"))) {
 		is_tmpfs = true;
+		pr_info("################### is tmpfs: %s\n", root_fs_names);
+	} else {
+		pr_info("################### is not tmpfs\n");
+	}
 }

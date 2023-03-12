@@ -195,6 +195,9 @@
                 BOOTENV \
 		"console=ttyAMA0,38400n8\0" \
 		"dram=1024M\0" \
+		"dram=1024M\0" \
+		"ipaddr=192.168.1.100\0" \
+		"serverip=192.168.1.7\0" \
 		"root=/dev/sda1 rw\0" \
 		"mtd=armflash:1M@0x800000(uboot),7M@0x1000000(kernel)," \
 			"24M@0x2000000(initrd)\0" \

@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "*.cpp": "cpp",
-        "initrd.h": "c"
+        "initrd.h": "c",
+        "fs_pin.h": "c"
     }
 }

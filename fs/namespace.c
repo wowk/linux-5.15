@@ -997,9 +997,20 @@ EXPORT_SYMBOL(vfs_create_mount);
 
 struct vfsmount *fc_mount(struct fs_context *fc)
 {
+	/**
+	 * 获取文件系统的超级块，如果没有创建，就创建一个
+	 * 需要注意的是，超级块是关联了一个目录树的（目录树节点使用 struct dentry 结构表示）
+	 * 创建完 超级块后，将其目录树的根节点保存到 filesystem_context->root 这个成员中，
+	 * 在后面 struct mount 对象创建好以后，将这个值赋给  mount->vfsmount.mnt_root 中，
+	 * 这个值就标识了当前挂载所在的目录项节点。
+	*/
 	int err = vfs_get_tree(fc);
 	if (!err) {
 		up_write(&fc->root->d_sb->s_umount);
+		/**
+		 * 现在超级块已经有了，创建一个 struct mount，并初始化
+		 * 然后返回其成员 struct vfsmount * mnt;
+		*/
 		return vfs_create_mount(fc);
 	}
 	return ERR_PTR(err);
@@ -1017,15 +1028,38 @@ struct vfsmount *vfs_kern_mount(struct file_system_type *type,
 	if (!type)
 		return ERR_PTR(-EINVAL);
 
+	/**
+	 * 创建一个filesystem context对象，这个context中呆会儿会用于保存
+	 * 挂载文件系统的所需要的信息
+	*/
 	fc = fs_context_for_mount(type, flags);
 	if (IS_ERR(fc))
 		return ERR_CAST(fc);
 
+	/**
+	 * 首先解析 "source“ 也就是需要挂载的文件系统的名称
+	*/
 	if (name)
 		ret = vfs_parse_fs_string(fc, "source",
 					  name, strlen(name));
+
+	pr_info("##########source: %s\n", name);
+
+	/**
+	 * 解析挂载时使用的各种选项，并且将解析的结果存放到 filesystem context 中
+	 * 此处并不是直接存放选项字符串，而是根据选项的值设定 context
+	*/
 	if (!ret)
 		ret = parse_monolithic_mount_data(fc, data);
+	
+	/**
+	 * 到这儿挂载的文件系统有了，挂载选项也已经存放到 context 中了，现在创建一个 struct mount 对象
+	 * 这个对象创建好了，并不代表已经挂载好了，在后面还要将这个mount对象加入到 mnt_list 链表中，才算是
+	 * 挂载完成
+	 * 
+	 * 也就是说，其实挂载就是事实上就是 创建 struct mount 对象，并将其关联到文件系统的 superblock，然后
+	 * 加入到 namespace_user 命名空间中的 mnt_list 链表上，并没什么特别的东西，用户空间
+	*/
 	if (!ret)
 		mnt = fc_mount(fc);
 	else
@@ -4296,6 +4330,24 @@ SYSCALL_DEFINE5(mount_setattr, int, dfd, const char __user *, path,
 	return err;
 }
 
+void traverse_dentry(struct dentry *dentry) {
+    // 遍历当前目录项下的所有子目录项
+    struct dentry *child;
+	static char suffix[128] = "";
+	pr_info("########%s%s -> ", suffix, dentry->d_name.name);
+    list_for_each_entry(child, &dentry->d_subdirs, d_child) {
+        if (S_ISDIR(child->d_inode->i_mode)) {
+            // 如果当前子目录项是一个目录，则递归遍历子目录
+			size_t len = strlen(suffix);
+			suffix[len] = '\t';
+			suffix[len+1] = 0;
+            traverse_dentry(child);
+			suffix[len] = 0;
+        }
+		pr_info("\n");
+    }
+}
+
 static void __init init_mount_tree(void)
 {
 	struct vfsmount *mnt;
@@ -4303,13 +4355,28 @@ static void __init init_mount_tree(void)
 	struct mnt_namespace *ns;
 	struct path root;
 
+	/**
+	 * 这个函数创建了文件系统的超级块，并且创建了一个 struct mount，将其和超级块关联起来了，
+	 * 接下来把他加入到 namespace_user->mnt_list 这个链表中就算是挂载好了。
+	*/
 	mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", NULL);
 	if (IS_ERR(mnt))
 		panic("Can't create rootfs");
 
+	/**
+	 * 分配一个mnt_namespace，并且和 namespace_user 关联起来，这个namespace是开机创建的第一个user namespace
+	*/
 	ns = alloc_mnt_ns(&init_user_ns, false);
 	if (IS_ERR(ns))
 		panic("Can't allocate initial namespace");
+	
+	/**
+	 * 将创建好的struct mount与namespace user关联起来，并将其加入到namespace->mnt_list中，
+	 * 这样，就算是挂载好了，
+	 * 如果用户态程序后续要查询当前namespace user挂载了那些文件系统，只要查询此namespace的 mnt_list 链表就可以了
+	 * 
+	 * 这个可以直接通过 cat /proc/mounts 来获取
+	*/
 	m = real_mount(mnt);
 	m->mnt_ns = ns;
 	ns->root = m;
@@ -4318,9 +4385,22 @@ static void __init init_mount_tree(void)
 	init_task.nsproxy->mnt_ns = ns;
 	get_mnt_ns(ns);
 
+	/**
+	 * 现在既然已经挂载好了，那就将这个文件系统设置为当前进程的 root 目录和工作目录
+	 * 
+	 * 当前进程为 swapper/0 进程
+	 * swapper 是 Linux 内核中的一个特殊进程，负责管理系统的虚拟内存和交换空间。它的主要作用是将不再使用
+	 * 但占用了内存空间的进程数据移动到交换分区，从而释放出内存供其他进程使用。当需要这些被交换出去的进程数
+	 * 据时，swapper 会将它们从交换分区恢复到内存中。
+	 * 
+	 * swapper进程在 sched_init 函数中创建，且每个CPU都创建一个
+	*/
+	pr_info("################ current: %s\n", current->comm);
 	root.mnt = mnt;
 	root.dentry = mnt->mnt_root;
 	mnt->mnt_flags |= MNT_LOCKED;
+
+	traverse_dentry(root.dentry);
 
 	set_fs_pwd(current->fs, &root);
 	set_fs_root(current->fs, &root);
@@ -4330,20 +4410,47 @@ void __init mnt_init(void)
 {
 	int err;
 
+	/**
+	 * 创建一个 struct mount 对象的内存池，底层由 slab 进行管理
+	*/
 	mnt_cache = kmem_cache_create("mnt_cache", sizeof(struct mount),
 			0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
 
+	/**
+	 * alloc_large_system_hash 用于在运行时动态分配大型哈希表，
+	 * 这个哈希表可以被用来存储各种内核数据结构
+	*/
+	/**
+	 * mount 文件系统的时候，会创建 struct mount 对象，内部包含 struct vfsmount 对象，
+	 * 在创建后，会将这个对象放进 mount_hashtable，方便后续的查找
+	*/
 	mount_hashtable = alloc_large_system_hash("Mount-cache",
 				sizeof(struct hlist_head),
 				mhash_entries, 19,
 				HASH_ZERO,
 				&m_hash_shift, &m_hash_mask, 0, 0);
+	/**
+	 * mount 文件系统的时候，需要一个挂载点，而这个挂载点使用数据结构 struct mountpoint
+	 * 来描述，在挂载的时候会将这个结构放入 mountpoint_hashtable 表，方便后续查找
+	 * 
+	 * struct mountpoint {
+	 * 		struct hlist_node m_hash;
+	 * 		struct dentry *m_dentry;
+	 * 		struct hlist_head m_list;
+	 * 		int m_count;
+	 * };
+	 * 
+	 * m_dentry 描述了当前的挂载目录
+	*/
 	mountpoint_hashtable = alloc_large_system_hash("Mountpoint-cache",
 				sizeof(struct hlist_head),
 				mphash_entries, 19,
 				HASH_ZERO,
 				&mp_hash_shift, &mp_hash_mask, 0, 0);
 
+	/**
+	 * 确保 hash 表分配成功，如果分配失败，则panic内核
+	*/
 	if (!mount_hashtable || !mountpoint_hashtable)
 		panic("Failed to allocate mount hash table\n");
 
@@ -4357,7 +4464,27 @@ void __init mnt_init(void)
 	if (!fs_kobj)
 		printk(KERN_WARNING "%s: kobj create error\n", __func__);
 	shmem_init();
+
+	/**
+	 * 这个名称有点误导性，会让人以为是在此处挂载了rootfs
+	 * 
+	 * 其实并不是
+	 * 
+	 * 此处并没有作什么复杂的操作，而只是检查了内核参数 root= 和 rootfstype= 来判断rootfs是否为 tmpfs
+	 * 其判断条件如下：
+	 * 
+	 * 	1. 如果配置了 CONFIG_TMPFS 并且 root= 参数没有指定，则检查如下条件：
+	 * 		如果 rootfstype= 参数没有指定 或者 rootfstype 的值中存在 tmpfs 字样，则认为当前rootfs为 tmpfs
+	 *  2. 否则认为当前的 rootfs 不是 tmpfs
+	 * 
+	 * 对应的值保存在 is_tmpfs 中，正常我们如果使用了 initramfs 作为 rootfs，则在
+	*/
 	init_rootfs();
+
+	/**
+	 * 这个函数创建了一个空的文件系统并挂载上，其实就是创建了一个挂载点
+	 * 后续会将真正的文件系统挂载到这个地方
+	*/
 	init_mount_tree();
 }
 

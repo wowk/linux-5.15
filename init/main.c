@@ -161,6 +161,9 @@ static size_t initargs_offs;
 #endif
 
 static char *execute_command;
+/**
+ * 这个变量可以使用内核参数 rdinit= 参数来修改其值
+*/
 static char *ramdisk_execute_command = "/init";
 
 /*
@@ -696,6 +699,8 @@ noinline void __ref rest_init(void)
 	 * We need to spawn init first so that it obtains pid 1, however
 	 * the init task will end up wanting to create kthreads, which, if
 	 * we schedule it before we create kthreadd, will OOPS.
+	 * 
+	 * 创建一个内核 init 线程，做一些初始化操作，其中就包括挂载rootfs根文件系统
 	 */
 	pid = kernel_thread(kernel_init, NULL, CLONE_FS);
 	/*
@@ -931,6 +936,9 @@ static void __init print_unknown_bootoptions(void)
 	memblock_free_ptr(unknown_options, len);
 }
 
+/**
+ * 内核的入口函数，由bootloader调用
+*/
 asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 {
 	char *command_line;
@@ -1000,6 +1008,8 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	 * Set up the scheduler prior starting any interrupts (such as the
 	 * timer interrupt). Full topology setup happens at smp_init()
 	 * time - but meanwhile we still have a functioning scheduler.
+	 * 
+	 * 在此处会创建 swapper 内核进程
 	 */
 	sched_init();
 
@@ -1121,6 +1131,10 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	security_init();
 	dbg_late_init();
 	net_ns_init();
+	/**
+	 * 初始化一个空的文件系统树并挂载上
+	 * 作为后续挂载rootfs的挂载点
+	*/
 	vfs_caches_init();
 	pagecache_init();
 	signals_init();
@@ -1139,7 +1153,10 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	arch_post_acpi_subsys_init();
 	kcsan_init();
 
-	/* Do the rest non-__init'ed, we're now alive */
+	/* Do the rest non-__init'ed, we're now alive 
+	 *
+	 * 在这儿，一个空的文件系统已经创建并挂载好了，我们开始挂载真正的rootfs
+	 */
 	arch_call_rest_init();
 
 	prevent_tail_call_optimization();
@@ -1506,6 +1523,9 @@ static int __ref kernel_init(void *unused)
 	 */
 	wait_for_completion(&kthreadd_done);
 
+	/**
+	 * 根文件系统挂载看这里
+	*/
 	kernel_init_freeable();
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
@@ -1529,6 +1549,11 @@ static int __ref kernel_init(void *unused)
 
 	do_sysctl_args();
 
+	/**
+	 * 根文件系统已经挂载好了，
+	 * 现在开始启动 init 进程
+	 * 下面会进行各种各样的尝试，直到成功启动一个 init 进程
+	*/
 	if (ramdisk_execute_command) {
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
@@ -1615,19 +1640,64 @@ static noinline void __init kernel_init_freeable(void)
 	/* Initialize page ext after all struct pages are initialized. */
 	page_ext_init();
 
+	/**
+	 * 在此处调用所有的 initcalls，包括 rootfs_initcall 
+	 * CONFIG_BLK_DEV_INITRD 这个选项控制内核是否支持 initramfs
+	 * 目前由两种 rootfs_initcall:
+	 * 		1. default_rootfs       这个函数定义在文件 noinitramfs.c 中，只有
+	 * 								当 CONFIG_BLK_DEV_INITRD 选项没打开的时候才会使用这个
+	 * 								这个函数会在已经挂载的空文件系统中创建，一个 /dev/ 目录和一个 /root/ 目录
+	 * 								然后创建一个 /dev/console 设备节点文件
+	 * 
+	 * 
+	 * 		2. populate_rootfs		这个函数定义在文件 initramfs.c 中，只有
+	 * 								当打开 CONFIG_BLK_DEV_INITRD 的时候，会使用这个函数
+	 * 
+	 * 								在 CONFIG_BLK_DEV_INITRD 打开的时候，内核在编译时会生成
+	 *    							一个 initramfs_data.cpio （生成脚本在 $(kernel_dir)/usr/ 目录中）
+	 * 								并将其通过连接器脚本连接进内核的一个section
+	 * 								
+	 * 								可以自行指定 initramfs 的内容，不指定的话就会生成一个默认的，里面的内容
+	 * 								和 default_rootfs函数中 创建的是一样的。
+	 * 
+	 * 	
+	 * populate_rootfs 会将链接进内核的 initramfs_data.cpio 解压到之前挂载的空的文件系统中，然后再尝试将
+	 * bootloader指定的 initramfs/ramdisk 解压到文件系统中（如果bootloader有指定的话）
+	 * 
+	 * 需要注意的是 populate_rootfs 会异步执行（指定内核参数 initramfs_async=false 会在异步执行后原地等待其完成）
+	 * 
+	*/
 	do_basic_setup();
 
 	kunit_run_all_tests();
 
+	/**
+	 * 由于populate_rootfs中可能是异步执行，所以到此处时，initramfs 可能并没有解压完成，所以
+	 * 此处等待解压完成，然后再继续
+	*/
 	wait_for_initramfs();
+
+	/**
+	 * 到此处，已经可以确定 initramfs/ramdisk 已经解压到当前文件系统中了
+	 * 
+	 * 由于默认的 initramfs 中创建了 /dev/console 设备节点，所以此处
+	 * 可以设定默认的 stdin/stdout/stderr 指向 /dev/console
+	 * 这个函数所作的就是这件事
+	*/
 	console_on_rootfs();
 
 	/*
 	 * check if there is an early userspace init.  If yes, let it do all
 	 * the work
+	 * 现在检查是否存在当前文件系统中是否存在 ramdisk_execute_command (当前默认值为 /init，可以使用内核参数 rdinit= 来修改其值)，
+	 * 如果存在的话，那么我们就可以直接将当前的文件系统作为根文件系统来使用
+	 * 
 	 */
 	if (init_eaccess(ramdisk_execute_command) != 0) {
 		ramdisk_execute_command = NULL;
+		/**
+		 * 如果不存在，那么
+		*/
 		prepare_namespace();
 	}
 

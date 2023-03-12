@@ -3266,6 +3266,14 @@ void __init vfs_caches_init(void)
 	inode_init();
 	files_init();
 	files_maxfiles_init();
+	/**
+	 * 这个函数主要的作用就是创建内核的第一个空的文件系统并挂载上
+	 * 这样我们就由一个空的目录树了，其只有一个根目录
+	 * 
+	 * 后续在内核挂载rootfs的时候，就会将rootfs挂载到 / 目录
+	 * 
+	 * 后续的挂载动作可以在 arch_call_rest_init 中看到
+	*/
 	mnt_init();
 	bdev_cache_init();
 	chrdev_init();
