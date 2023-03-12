@@ -123,13 +123,22 @@ static void __init handle_initrd(void)
 
 bool __init initrd_load(void)
 {
+	/**
+	 * 这个值决定是否要加载 /initrd.image 到 /root ，
+	 * 默认为 1,
+	 * 但是可以通过内核参数 noinitrd  将其指定为0
+	*/
 	if (mount_initrd) {
+		/**
+		 * 首先创建 /dev/ram 设备，因为 initrd 时 ramdisk 设备，所以对因的时 /dev/ram 设备
+		*/
 		create_dev("/dev/ram", Root_RAM0);
 		/*
 		 * Load the initrd data into /dev/ram0. Execute it as initrd
 		 * unless /dev/ram0 is supposed to be our actual root device,
 		 * in that case the ram disk is just set up here, and gets
 		 * mounted in the normal path.
+		 * 加载
 		 */
 		if (rd_load_image("/initrd.image") && ROOT_DEV != Root_RAM0) {
 			init_unlink("/initrd.image");

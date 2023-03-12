@@ -364,6 +364,11 @@ int __init devtmpfs_mount(void)
 {
 	int err;
 
+	/**
+	 * 这个变量由两种方式决定：
+	 * 	1. CONFIG_DEVTMPFS_MOUNT    	如果这个选项打开了，那么就默认挂载 devtmpfs
+	 * 	2. devtmpfs.mount				这个选项用于在设定是否挂载 devtmpfs，如果每制订就看 CONFIG_DEVTMPFS_MOUNT 是否打开
+	*/
 	if (!mount_dev)
 		return 0;
 

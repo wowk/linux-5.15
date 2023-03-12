@@ -1,7 +1,16 @@
 sudo ip link set up dev tap0
 sudo ip addr add 192.168.1.7/24 dev tap0
 
-tftpboot 0x60000000 kernel;tftpboot 0x61000000 rootfs.img;tftpboot 0x62000000 dtb
-setenv bootargs 'console=ttyAMA0 devtmpfs.mount=1 rootfstype=ext4'
+tftpboot 0x60000000 kernel;tftpboot 0x61000000 rootfs.img;tftpboot 0x62000000 dtb;bootz 0x60000000 0x61000000 0x62000000
+setenv bootargs 'console=ttyAMA0 devtmpfs.mount=1 /dev/ram0 rootfstype=tmpfs initrd=0x60000000'
 bootz 0x60000000 0x61000000 0x62000000
 bootz 0x60000000 - 0x62000000
+
+
+
+tftpboot 0x60000000 kernel;tftpboot 0x61000000 rootfs;tftpboot 0x62000000 dtb
+setenv bootargs 'console=ttyAMA0 devtmpfs.mount=1 /dev/ram0 rootfstype=tmpfs initrd=0x60000000'
+bootz 0x60000000 - 0x62000000
+
+
+tftpboot 0x60000000 kernel;tftpboot 0x61000000 rootfs.img;tftpboot 0x62000000 dtb;setenv bootargs 'console=ttyAMA0 devtmpfs.mount=1 rdinit=/bin/sh';bootz 0x60000000 0x61000000 0x62000000

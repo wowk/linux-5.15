@@ -639,7 +639,7 @@ void __init prepare_namespace(void)
 		root_device_name = saved_root_name;
 		/**
 		 * 首先检查当前的 root_device 是否时 mtd 或者 ubi 设备，如果是，
-		 * 则去挂载这种类型的设备到目录  /root ，挂载完成后直接返回
+		 * 则去挂载这种类型的设备到目录  /root ，挂载完成后会执行 chdir 到 /root 目录，然后直接返回
 		*/
 		if (!strncmp(root_device_name, "mtd", 3) ||
 		    !strncmp(root_device_name, "ubi", 3)) {
@@ -659,7 +659,8 @@ void __init prepare_namespace(void)
 	}
 
 	/**
-	 * 如果 CONFIG_BLK_DEV_INITRD 选项没打开，那么这段函数什么也不做
+	 * 如果 CONFIG_BLK_DEV_INITRD 选项没打开，那么这段函数什么也不做，
+	 * 否则
 	*/
 	if (initrd_load())
 		goto out;
@@ -679,9 +680,23 @@ void __init prepare_namespace(void)
 		async_synchronize_full();
 	}
 
+	/**
+	 * 现在大概可能 root device 设备，已经准备好了，那么根据设备号 ROOT_DEV 去挂载
+	 * 对应的设备，如果挂载失败的，则 panic
+	 * 如果挂载成功，则执行 chdir 到 /root 目录，然后返回
+	*/
 	mount_root();
 out:
+	/**
+	 * 现在根文件系统已经挂载好了，并且当前目录切换到了 /root 目录，开始挂载 devtmpfs
+	*/
 	devtmpfs_mount();
+
+	/**
+	 * 当前目录在挂载 root device 成功后切换到了 /root 目录，
+	 * 现在将当前目录移动到 / 根目录，然后执行 chroot 到根目录，
+	 * 现在 rootfs 就真正的挂载完成了，并且也切换过去了
+	*/
 	init_mount(".", "/", NULL, MS_MOVE, NULL);
 	init_chroot(".");
 }
